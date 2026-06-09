@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import ReactDOM from 'react-dom';
 import { ArrowLeft, TrendingUp, TrendingDown, Minus, Calendar, BarChart3, Activity, Info } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { db } from '../../firebase-config';
@@ -18,6 +19,7 @@ const SymptomPatterns = () => {
   const [selectedMetric, setSelectedMetric] = useState('overallWellbeing');
   const [hoveredDay, setHoveredDay] = useState(null);
   const [timeRange, setTimeRange] = useState(90);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
   // Default symptom definitions (same as tracker)
   const defaultSymptomCategories = useMemo(() => ({
@@ -354,7 +356,9 @@ const SymptomPatterns = () => {
   // Format date for tooltip
   const formatDate = (dateStr) => {
     const date = new Date(dateStr + 'T12:00:00');
-    return date.toLocaleDateString('default', { weekday: 'short', month: 'short', day: 'numeric' });
+    return date.toLocaleDateString('default', {
+      weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+    });
   };
 
   const getValueLabel = (value) => {
@@ -565,30 +569,48 @@ const SymptomPatterns = () => {
             </div>
 
             {/* Grid */}
-            <div className="heatmap-grid" style={{ gridTemplateColumns: `repeat(${heatmapWeeks.length}, 1fr)` }}>
+            <div
+              className="heatmap-grid"
+              style={{ gridTemplateColumns: `repeat(${heatmapWeeks.length}, 1fr)` }}
+              onMouseMove={e => {
+                const cell = e.target.closest('[data-date]');
+                if (cell) {
+                  setHoveredDay(cell.dataset.date);
+                  setTooltipPos({ x: e.clientX, y: e.clientY });
+                }
+              }}
+              onMouseLeave={() => setHoveredDay(null)}
+            >
               {heatmapWeeks.map((week, wIdx) => (
                 <div key={wIdx} className="heatmap-week">
                   {week.map((day, dIdx) => (
                     <div
                       key={dIdx}
+                      data-date={day?.date ?? ''}
                       className={`heatmap-cell ${day ? 'has-day' : 'no-day'} ${hoveredDay === day?.date ? 'hovered' : ''}`}
                       style={day ? { background: getHeatmapColor(day.value, day.hasData) } : {}}
-                      onMouseEnter={() => day && setHoveredDay(day.date)}
-                      onMouseLeave={() => setHoveredDay(null)}
-                    >
-                      {hoveredDay === day?.date && day && (
-                        <div className="heatmap-tooltip">
-                          <strong>{formatDate(day.date)}</strong>
-                          <span>{getValueLabel(day.value)}</span>
-                        </div>
-                      )}
-                    </div>
+                    />
                   ))}
                 </div>
               ))}
             </div>
           </div>
         </div>
+
+        {/* Floating rich tooltip */}
+        {hoveredDay && (
+          <HeatmapTooltip
+            dateStr={hoveredDay}
+            dayData={symptomData[hoveredDay]}
+            pos={tooltipPos}
+            selectedMetric={selectedMetric}
+            allSymptoms={allSymptoms}
+            formatDate={formatDate}
+            getValueLabel={getValueLabel}
+            getHeatmapColor={getHeatmapColor}
+            heatmapData={heatmapData}
+          />
+        )}
       </div>
 
       {/* Day of Week Patterns */}
@@ -715,5 +737,181 @@ const SymptomPatterns = () => {
     </div>
   );
 };
+
+// ── Rich heatmap tooltip ──────────────────────────────────────────────────────
+function HeatmapTooltip({ dateStr, dayData, pos, selectedMetric, allSymptoms,
+  formatDate, getValueLabel, getHeatmapColor, heatmapData }) {
+
+  const dayEntry = heatmapData.find(d => d.date === dateStr);
+  const value    = dayEntry?.value ?? null;
+
+  // Collect all symptoms active that day
+  const symptoms = [];
+  if (dayData?.symptoms) {
+    Object.entries(dayData.symptoms).forEach(([id, data]) => {
+      let severity = 0;
+      const triggers = [];
+      if (Array.isArray(data)) {
+        severity = data.length > 0 ? Math.max(...data.map(i => i.severity || 0)) : 0;
+        data.forEach(i => i.triggers?.forEach(t => triggers.push(t)));
+      } else if (data && typeof data === 'object') {
+        severity = data.severity || 0;
+        data.triggers?.forEach(t => triggers.push(t));
+      }
+      if (severity > 0) {
+        symptoms.push({
+          id, severity,
+          name: allSymptoms[id]?.name || id,
+          triggers: [...new Set(triggers)],
+        });
+      }
+    });
+    symptoms.sort((a, b) => b.severity - a.severity);
+  }
+
+  // Collect all triggers for the day
+  const allTriggers = [...new Set(symptoms.flatMap(s => s.triggers))];
+
+  // Severity label
+  const severityLabel = v => ['—','Mild','Mild–Mod','Moderate','Mod–Severe','Severe'][v] || '—';
+  const wellbeingLabel = v => ['—','Very Poor','Poor','Fair','Good','Excellent'][v] || '—';
+  const wellbeingEmoji = v => ['','😞','😟','😐','🙂','😊'][v] || '';
+
+  // Wellbeing color
+  const scoreColor = value === null ? '#aaa'
+    : value >= 4 ? '#22c55e'
+    : value === 3 ? '#eab308'
+    : '#ef4444';
+
+  // Flip tooltip if near right/bottom edge
+  const TIP_W = 260, TIP_H = 300;
+  const left = pos.x + 14 + TIP_W > window.innerWidth  ? pos.x - TIP_W - 14 : pos.x + 14;
+  const top  = pos.y + 14 + TIP_H > window.innerHeight ? pos.y - TIP_H - 14 : pos.y + 14;
+
+  return ReactDOM.createPortal(
+    <div style={{
+      position: 'fixed', left, top, zIndex: 9999,
+      width: TIP_W, pointerEvents: 'none',
+      background: 'rgba(255,255,255,0.97)',
+      border: '1px solid rgba(59,130,246,0.2)',
+      borderRadius: 12,
+      boxShadow: '0 8px 32px rgba(59,130,246,0.15), 0 2px 8px rgba(0,0,0,0.08)',
+      fontFamily: 'inherit', overflow: 'hidden',
+    }}>
+      {/* Header */}
+      <div style={{
+        background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+        padding: '10px 14px',
+        color: '#fff',
+      }}>
+        <div style={{ fontSize: 11, opacity: 0.85, marginBottom: 2 }}>
+          {new Date(dateStr + 'T12:00:00').toLocaleDateString('default', { weekday: 'long' })}
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>
+          {new Date(dateStr + 'T12:00:00').toLocaleDateString('default', { month: 'long', day: 'numeric', year: 'numeric' })}
+        </div>
+      </div>
+
+      <div style={{ padding: '10px 14px' }}>
+
+        {/* Overall wellbeing score */}
+        {dayData ? (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '8px 10px', borderRadius: 8,
+            background: `${scoreColor}12`, marginBottom: 10,
+          }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: '50%',
+              background: `${scoreColor}22`,
+              border: `2px solid ${scoreColor}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 16,
+            }}>
+              {wellbeingEmoji(dayData.overallWellbeing)}
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 1 }}>Overall Wellbeing</div>
+              <div style={{ fontWeight: 700, color: scoreColor, fontSize: 14 }}>
+                {wellbeingLabel(dayData.overallWellbeing)}
+                <span style={{ fontWeight: 400, fontSize: 11, color: '#9ca3af', marginLeft: 4 }}>
+                  {dayData.overallWellbeing}/5
+                </span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, padding: '8px 0 12px' }}>
+            No data recorded
+          </div>
+        )}
+
+        {/* Symptoms list */}
+        {symptoms.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
+              letterSpacing: '.05em', marginBottom: 6 }}>
+              Active Symptoms
+            </div>
+            {symptoms.slice(0, 5).map(s => (
+              <div key={s.id} style={{ marginBottom: 5 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between',
+                  fontSize: 11, marginBottom: 2 }}>
+                  <span style={{ color: '#374151', fontWeight: 500 }}>{s.name}</span>
+                  <span style={{ color: s.severity >= 4 ? '#ef4444' : s.severity >= 3 ? '#f97316' : '#eab308',
+                    fontWeight: 700, fontSize: 10 }}>
+                    {severityLabel(s.severity)}
+                  </span>
+                </div>
+                {/* Severity bar */}
+                <div style={{ height: 4, background: '#e5e7eb', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', width: `${(s.severity / 5) * 100}%`,
+                    borderRadius: 2,
+                    background: s.severity >= 4 ? '#ef4444' : s.severity >= 3 ? '#f97316' : '#eab308',
+                  }} />
+                </div>
+              </div>
+            ))}
+            {symptoms.length > 5 && (
+              <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>
+                +{symptoms.length - 5} more symptom{symptoms.length - 5 > 1 ? 's' : ''}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Triggers */}
+        {allTriggers.length > 0 && (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
+              letterSpacing: '.05em', marginBottom: 5 }}>
+              Triggers
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {allTriggers.slice(0, 6).map(t => (
+                <span key={t} style={{
+                  background: '#fef3c7', color: '#92400e',
+                  fontSize: 10, padding: '2px 7px', borderRadius: 10,
+                  border: '1px solid #fde68a',
+                }}>
+                  {t}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* No symptoms note */}
+        {dayData && symptoms.length === 0 && (
+          <div style={{ fontSize: 11, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span>✓</span> No symptoms recorded
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 export default SymptomPatterns;

@@ -1,6 +1,9 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth, AuthProvider } from './AuthContext';
+import { app } from './firebase-config';     // ← ADD (your existing firebase app)
+import LccAdmin from './components/Admin/LccAdminPage';     // ← ADD
+
 
 import RegistrationPage    from './components/Register/RegistrationPage';
 import Dashboard           from './components/Dashboard/Dashboard';
@@ -111,6 +114,7 @@ function App() {
       <Router basename="/energy_balance_wo_watch">
         <div className="App">
           <AppRoutes />
+          <LccAdmin app={app} />            {/* ← ADD */}
         </div>
       </Router>
     </AuthProvider>
